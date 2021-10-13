@@ -20,6 +20,11 @@ class Promise
         $this->resolves[] = $callable; return $this;
     }
 
+    public function state()
+    {
+        return $this->state;
+    }
+
     public function catch(callable $callable)
     {
         $this->rejects[] = $callable; return $this;
@@ -52,7 +57,86 @@ class Promise
         $this->executecallabe($this->resolves, $response);
     }
 
-    public function defer()
+    public static function all(array $promises)
+    {
+        return new self(function($resolve, $reject) use (&$promises){
+            $results = [];
+
+            $rejected = false;
+
+            $promisenum = 0;
+
+            foreach ($promises as $key => $promise) {
+                if ( !static::ispromise($promise) ) { continue; }
+
+                $results[$key] = null;
+
+                $promisenum++;
+
+                $promise->then(function($response) use (&$promisenum, &$rejected, &$results, $resolve, $key) {
+                    if ( $rejected ) { return ; }
+
+                    $results[$key] = $response;
+
+                    if ( !--$promisenum ) { $resolve($results); }
+                });
+
+                $promise->catch(function($response) use ($reject, $key) {
+                    $rejected = true; $reject($response, $key);
+                });
+            }
+        });
+    }
+
+    public static function race(array $promises)
+    {
+        return new self(function($resolve, $reject) use (&$promises){
+            $RACEd = false;
+
+            foreach ($promises as $key => $promise) {
+                if ( !static::ispromise($promise) ) { continue; }
+
+                $promise->then(function($response) use ($RACEd, $resolve, $key) {
+                    !$RACEd && ($RACEd = true && $resolve($response, $key));
+                });
+
+                $promise->catch(function($response) use ($RACEd, $reject, $key) {
+                    !$RACEd && ($RACEd = true && $reject($response, $key));
+                });
+            }
+        });
+    }
+
+    public static function allsettled(array $promises)
+    {
+        return new self(function($resolve, $reject) use (&$promises){
+            $results = [];
+
+            $promisenum = 0;
+
+            foreach ($promises as $key => $promise) {
+                if ( !static::ispromise($promise) ) { continue; }
+
+                $results[$key] = new stdClass();
+
+                $promisenum++;
+
+                $promise->then(function($response) use (&$promisenum, &$results, $resolve, $key) {
+                    $results[$key]->value = $response;
+                    $results[$key]->status = 'fulfilled';
+                    if ( !--$promisenum ) { $resolve($results); }
+                });
+
+                $promise->catch(function($response) use (&$promisenum, &$results, $resolve, $key) {
+                    $results[$key]->reason = $response;
+                    $results[$key]->status = 'rejected';
+                    if ( !--$promisenum ) { $resolve($results); }
+                });
+            }
+        });
+    }
+
+    public static function defer()
     {
         return new class(__CLASS__) {
             function __construct($prototype)
@@ -75,12 +159,12 @@ class Promise
         };
     }
 
-    public function reject4static($response = null)
+    private function reject4static($response = null)
     {
         return static::state4static(0, $response);
     }
 
-    public function resolve4static($response = null)
+    private function resolve4static($response = null)
     {
         return static::state4static(1, $response);
     }
