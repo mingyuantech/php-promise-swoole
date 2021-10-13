@@ -48,13 +48,29 @@ Promise::all([
     var_dump($response);
 });
 
-Promise::all([
+Promise::race([
     new Promise(function($resolve, $reject) { Swoole\Timer::after(100, function() use ($resolve){ $resolve(1); }); }),
     new Promise(function($resolve, $reject) { Swoole\Timer::after(100, function() use ($reject){ $reject(2); }); }),
     new Promise(function($resolve, $reject) { Swoole\Timer::after(100, function() use ($resolve){ $resolve(3); }); }),
 ])->then(function($response){
     var_dump($response);
 });
+
+Promise::pipe([
+        function($resolve, $reject, $response) {
+            var_dump("pipe 1: ". $response); Co::sleep(1); return $resolve(1);
+        },
+
+        function($resolve, $reject, $response) {
+            var_dump("pipe 2: ". $response); Co::sleep(1); return $resolve(2);
+        },
+    ],
+        function($response) {
+            var_dump("pipe 3: ". $response); Co::sleep(1); return MyPROMISE::resolve(3);
+        }
+    )->then(function(){
+        var_dump('over', func_get_args());
+    });
 
 Promise::allsettled([
     new Promise(function($resolve, $reject) { Swoole\Timer::after(100, function() use ($resolve){ $resolve(1); }); }),
