@@ -10,9 +10,14 @@ class Promise
     private $rejects = [];
     private $resolves = [];
 
-    function __construct(callable $callable)
+    function __construct(callable $callable, ...$args)
     {
-        Go($callable, [$this, 'resolve'], [$this, 'reject']);
+        Go($callable, [$this, 'resolve'], [$this, 'reject'], ...$args);
+    }
+
+    function __invoke(callable $callable, ...$args)
+    {
+        return new self($callable, ...$args);
     }
 
     public function then($callable)
@@ -67,6 +72,8 @@ class Promise
             $promisenum = 0;
 
             foreach ($promises as $key => $promise) {
+                if ( is_callable($promise) ) { $promise = $promise(); }
+
                 if ( !static::ispromise($promise) ) { continue; }
 
                 $results[$key] = null;
@@ -94,6 +101,8 @@ class Promise
             $RACEd = false;
 
             foreach ($promises as $key => $promise) {
+                if ( is_callable($promise) ) { $promise = $promise(); }
+
                 if ( !static::ispromise($promise) ) { continue; }
 
                 $promise->then(function($response) use ($RACEd, $resolve, $key) {
@@ -107,33 +116,28 @@ class Promise
         });
     }
 
-    public static function allsettled(array $promises)
+    public static function pipe(...$args)
     {
-        return new self(function($resolve, $reject) use (&$promises){
-            $results = [];
+        $defer = static::defer();
 
-            $promisenum = 0;
+        $pipefn = function(array $callables, $response = null) use ($defer, &$pipefn) {
+            $callable = array_shift($callables);
 
-            foreach ($promises as $key => $promise) {
-                if ( !static::ispromise($promise) ) { continue; }
+            if ( !$callable ) { return $defer->resolve($response); }
 
-                $results[$key] = new stdClass();
+            if ( !is_callable($callable) ) { return $pipefn($callables, $response); }
 
-                $promisenum++;
-
-                $promise->then(function($response) use (&$promisenum, &$results, $resolve, $key) {
-                    $results[$key]->value = $response;
-                    $results[$key]->status = 'fulfilled';
-                    if ( !--$promisenum ) { $resolve($results); }
+            static::callable2promise($callable, $response)
+                ->then(function($response) use (&$pipefn, &$callables){
+                    $pipefn($callables, $response);
+                })->catch(function($reason) use ($defer) {
+                    $defer->reject($reason);
                 });
+        };
 
-                $promise->catch(function($response) use (&$promisenum, &$results, $resolve, $key) {
-                    $results[$key]->reason = $response;
-                    $results[$key]->status = 'rejected';
-                    if ( !--$promisenum ) { $resolve($results); }
-                });
-            }
-        });
+        $pipefn( static::args2array($args) );
+
+        return $defer->promise;
     }
 
     public static function defer()
@@ -159,6 +163,37 @@ class Promise
         };
     }
 
+    public static function allsettled(array $promises)
+    {
+        return new self(function($resolve, $reject) use (&$promises){
+            $results = [];
+
+            $promisenum = 0;
+
+            foreach ($promises as $key => $promise) {
+                if ( is_callable($promise) ) { $promise = $promise(); }
+
+                if ( !static::ispromise($promise) ) { continue; }
+
+                $results[$key] = new stdClass();
+
+                $promisenum++;
+
+                $promise->then(function($response) use (&$promisenum, &$results, $resolve, $key) {
+                    $results[$key]->value = $response;
+                    $results[$key]->status = 'fulfilled';
+                    if ( !--$promisenum ) { $resolve($results); }
+                });
+
+                $promise->catch(function($response) use (&$promisenum, &$results, $resolve, $key) {
+                    $results[$key]->reason = $response;
+                    $results[$key]->status = 'rejected';
+                    if ( !--$promisenum ) { $resolve($results); }
+                });
+            }
+        });
+    }
+
     private function reject4static($response = null)
     {
         return static::state4static(0, $response);
@@ -179,6 +214,44 @@ class Promise
         return new self(function($resolve, $reject)use($type, &$response){
             Co::sleep(0.001); Go($type ? $resolve : $reject, $response);
         });
+    }
+
+    private function args2array($args)
+    {
+        $alls  = [];
+
+        foreach ($args as $argv) {
+            if ( is_array($argv) && !is_callable($argv) ) {
+                array_push($alls, ...static::args2array($argv));
+            } else {
+                array_push($alls, $argv);
+            }
+        }
+
+        return $alls;
+    }
+
+    private function callable2promise(callable $callable, $response = null)
+    {
+        $rf = new ReflectionFunction($callable);
+
+        $parameters = $rf->getParameters();
+
+        if ( empty($parameters) ) {
+            $promise = $callable($response);
+        }
+
+        else if ( $parameters[0]->name === 'resolve' ) {
+            $promise = new self($callable, $response);
+        }
+
+        else {
+            $promise = $callable($response);
+        }
+
+        return static::ispromise($promise) ? $promise : (
+                $promise ? static::resolve($promise) : static::reject($promise)
+            );
     }
 
     private function executecallabe(&$callables, $response = null)
