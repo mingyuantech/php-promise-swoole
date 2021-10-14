@@ -71,10 +71,8 @@ class Promise
 
             $promisenum = 0;
 
-            foreach ($promises as $key => $promise) {
-                if ( is_callable($promise) ) { $promise = $promise(); }
-
-                if ( !static::ispromise($promise) ) { continue; }
+            foreach ($promises as $key => $callable) {
+                $promise = static::callable2promise($callable);
 
                 $results[$key] = null;
 
@@ -100,10 +98,8 @@ class Promise
         return new self(function($resolve, $reject) use (&$promises){
             $RACEd = false;
 
-            foreach ($promises as $key => $promise) {
-                if ( is_callable($promise) ) { $promise = $promise(); }
-
-                if ( !static::ispromise($promise) ) { continue; }
+            foreach ($promises as $key => $callable) {
+                $promise = static::callable2promise($callable);
 
                 $promise->then(function($response) use ($RACEd, $resolve, $key) {
                     !$RACEd && ($RACEd = true && $resolve($response, $key));
@@ -170,10 +166,8 @@ class Promise
 
             $promisenum = 0;
 
-            foreach ($promises as $key => $promise) {
-                if ( is_callable($promise) ) { $promise = $promise(); }
-
-                if ( !static::ispromise($promise) ) { continue; }
+            foreach ($promises as $key => $callable) {
+                $promise = static::callable2promise($callable);
 
                 $results[$key] = new stdClass();
 
@@ -267,6 +261,9 @@ class Promise
                 $this->executepromise($val); break;
             }
         }
+
+        array_splice($this->rejects, 0);
+        array_splice($this->resolves, 0);
     }
 
     private function executepromise($promise)
