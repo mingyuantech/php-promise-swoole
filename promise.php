@@ -15,11 +15,6 @@ class Promise
         Go($callable, [$this, 'resolve'], [$this, 'reject'], ...$args);
     }
 
-    function __invoke(callable $callable, ...$args)
-    {
-        return new self($callable, ...$args);
-    }
-
     public function then($callable)
     {
         $this->resolves[] = $callable; return $this;
@@ -225,39 +220,6 @@ class Promise
         return $alls;
     }
 
-    private function callable2promise($callable, $response = null)
-    {
-        if ( is_callable($callable) ) {
-            $rf = new ReflectionFunction($callable);
-
-            $parameters = $rf->getParameters();
-
-            if ( empty($parameters) ) {
-                $promise = $callable($response);
-            }
-
-            else if ( $parameters[0]->name === 'resolve' ) {
-                $promise = new self($callable, $response);
-            }
-
-            else {
-                $promise = $callable($response);
-            }
-        } else if ( is_int($callable) && is_array($timer = Swoole\Timer::info($callable))) {
-            $promise = new self(function($resolve) use (&$timer, $callable){
-                Swoole\Timer::after($timer['exec_msec'], function() use (&$timer, $resolve, $callable){
-                    $resolve(true); $timer['interval'] && Swoole\Timer::clear($callable);
-                });
-            });
-        } else {
-            $promise = &$callable;
-        }
-
-        return static::ispromise($promise) ? $promise : (
-                $promise ? static::resolve($promise) : static::reject($promise)
-            );
-    }
-
     private function executecallabe(&$callables, $response = null)
     {
         while ( $callable = array_shift($callables) ) {
@@ -282,4 +244,42 @@ class Promise
             call_user_func([$this, $this->state === 'rejected' ? 'reject' : 'resolve'], $response);
         });
     }
+
+    private function callable2promise($callable, $response = null)
+    {
+        if ( is_callable($callable) ) {
+            $rf = new ReflectionFunction($callable);
+
+            $parameters = $rf->getParameters();
+
+            if ( empty($parameters) ) {
+                $promise = $callable($response);
+            }
+
+            else if ( $parameters[0]->name === 'resolve' ) {
+                $promise = new self($callable, $response);
+            }
+
+            else {
+                $promise = $callable($response);
+            }
+        } else if ( is_int($callable) && is_array($timer = Swoole\Timer::info($callable))) {
+            $promise = new self(function($resolve) use (&$timer, $callable){
+                Swoole\Timer::after($timer['exec_msec'] + 10, function() use (&$timer, $resolve, $callable){
+                    $resolve(true); $timer['interval'] && Swoole\Timer::clear($callable);
+                });
+            });
+        } else {
+            $promise = &$callable;
+        }
+
+        return static::ispromise($promise) ? $promise : (
+                $promise ? static::resolve($promise) : static::reject($promise)
+            );
+    }
+}
+
+function Promise(callable $callable, ...$args)
+{
+    return new Promise($callable, ...$args);
 }
