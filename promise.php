@@ -62,16 +62,16 @@ class Promise
         $this->executecallabe($this->resolves, $response);
     }
 
-    public static function all(array $promises)
+    public static function all(...$args)
     {
-        return new self(function($resolve, $reject) use (&$promises){
+        return new self(function($resolve, $reject) use (&$args){
             $results = [];
 
             $rejected = false;
 
             $promisenum = 0;
 
-            foreach ($promises as $key => $callable) {
+            foreach (static::args2array($args) as $key => $callable) {
                 $promise = static::callable2promise($callable);
 
                 $results[$key] = null;
@@ -93,12 +93,12 @@ class Promise
         });
     }
 
-    public static function race(array $promises)
+    public static function race(...$args)
     {
-        return new self(function($resolve, $reject) use (&$promises){
+        return new self(function($resolve, $reject) use (&$args){
             $RACEd = false;
 
-            foreach ($promises as $key => $callable) {
+            foreach (static::args2array($args) as $key => $callable) {
                 $promise = static::callable2promise($callable);
 
                 $promise->then(function($response) use ($RACEd, $resolve, $key) {
@@ -159,14 +159,14 @@ class Promise
         };
     }
 
-    public static function allsettled(array $promises)
+    public static function allsettled(...$args)
     {
-        return new self(function($resolve, $reject) use (&$promises){
+        return new self(function($resolve, $reject) use (&$args){
             $results = [];
 
             $promisenum = 0;
 
-            foreach ($promises as $key => $callable) {
+            foreach (static::args2array($args) as $key => $callable) {
                 $promise = static::callable2promise($callable);
 
                 $results[$key] = new stdClass();
@@ -225,22 +225,32 @@ class Promise
         return $alls;
     }
 
-    private function callable2promise(callable $callable, $response = null)
+    private function callable2promise($callable, $response = null)
     {
-        $rf = new ReflectionFunction($callable);
+        if ( is_callable($callable) ) {
+            $rf = new ReflectionFunction($callable);
 
-        $parameters = $rf->getParameters();
+            $parameters = $rf->getParameters();
 
-        if ( empty($parameters) ) {
-            $promise = $callable($response);
-        }
+            if ( empty($parameters) ) {
+                $promise = $callable($response);
+            }
 
-        else if ( $parameters[0]->name === 'resolve' ) {
-            $promise = new self($callable, $response);
-        }
+            else if ( $parameters[0]->name === 'resolve' ) {
+                $promise = new self($callable, $response);
+            }
 
-        else {
-            $promise = $callable($response);
+            else {
+                $promise = $callable($response);
+            }
+        } else if ( is_int($callable) && is_array($timer = Swoole\Timer::info($callable))) {
+            $promise = new self(function($resolve) use (&$timer, $callable){
+                Swoole\Timer::after($timer['exec_msec'], function() use (&$timer, $resolve, $callable){
+                    $resolve(true); $timer['interval'] && Swoole\Timer::clear($callable);
+                });
+            });
+        } else {
+            $promise = &$callable;
         }
 
         return static::ispromise($promise) ? $promise : (
