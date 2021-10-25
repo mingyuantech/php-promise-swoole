@@ -7,17 +7,23 @@
 class Promise
 {
     private $state = 'pending';
+    private $result;
     private $rejects = [];
     private $resolves = [];
 
     function __construct(callable $callable, ...$args)
     {
-        Go($callable, [$this, 'resolve'], [$this, 'reject'], ...$args);
+        // Go($callable, [$this, 'resolve'], [$this, 'reject'], ...$args);
+        $callable([$this, 'resolve'], [$this, 'reject'], ...$args);
     }
 
-    public function then($callable)
+    public function then(callable $callable)
     {
-        $this->resolves[] = $callable; return $this;
+        $this->resolves[] = $callable;
+
+        $this->executecallabe();
+
+        return $this;
     }
 
     public function state()
@@ -27,7 +33,11 @@ class Promise
 
     public function catch(callable $callable)
     {
-        $this->rejects[] = $callable; return $this;
+        $this->rejects[] = $callable;
+
+        $this->executecallabe();
+
+        return $this;
     }
 
     public function finally(callable $callable)
@@ -36,25 +46,31 @@ class Promise
 
         $this->resolves[] = $callable;
 
+        $this->executecallabe();
+
         return $this;
     }
 
-    public function reject($response = null)
+    public function reject($result = null)
     {
-        if ( !isset($this) ) { return static::reject4static($response); }
+        if ( !isset($this) ) { return static::reject4static($result); }
 
         $this->state = 'rejected';
 
-        $this->executecallabe($this->rejects, $response);
+        $this->result = $result;
+
+        $this->executecallabe($result);
     }
 
-    public function resolve($response = null)
+    public function resolve($result = null)
     {
-        if ( !isset($this) ) { return static::resolve4static($response); }
+        if ( !isset($this) ) { return static::resolve4static($result); }
 
         $this->state = 'fulfilled';
 
-        $this->executecallabe($this->resolves, $response);
+        $this->result = $result;
+
+        $this->executecallabe($result);
     }
 
     public static function all(...$args)
@@ -73,16 +89,16 @@ class Promise
 
                 $promisenum++;
 
-                $promise->then(function($response) use (&$promisenum, &$rejected, &$results, $resolve, $key) {
+                $promise->then(function($result) use (&$promisenum, &$rejected, &$results, $resolve, $key) {
                     if ( $rejected ) { return ; }
 
-                    $results[$key] = $response;
+                    $results[$key] = $result;
 
                     if ( !--$promisenum ) { $resolve($results); }
                 });
 
-                $promise->catch(function($response) use ($reject, $key) {
-                    $rejected = true; $reject($response, $key);
+                $promise->catch(function($result) use ($reject, $key) {
+                    $rejected = true; $reject($result, $key);
                 });
             }
         });
@@ -96,12 +112,12 @@ class Promise
             foreach (static::args2array($args) as $key => $callable) {
                 $promise = static::callable2promise($callable);
 
-                $promise->then(function($response) use ($RACEd, $resolve, $key) {
-                    !$RACEd && ($RACEd = true && $resolve($response, $key));
+                $promise->then(function($result) use ($RACEd, $resolve, $key) {
+                    !$RACEd && ($RACEd = true && $resolve($result, $key));
                 });
 
-                $promise->catch(function($response) use ($RACEd, $reject, $key) {
-                    !$RACEd && ($RACEd = true && $reject($response, $key));
+                $promise->catch(function($result) use ($RACEd, $reject, $key) {
+                    !$RACEd && ($RACEd = true && $reject($result, $key));
                 });
             }
         });
@@ -111,16 +127,16 @@ class Promise
     {
         $defer = static::defer();
 
-        $pipefn = function(array $callables, $response = null) use ($defer, &$pipefn) {
+        $pipefn = function(array $callables, $result = null) use ($defer, &$pipefn) {
             $callable = array_shift($callables);
 
-            if ( !$callable ) { return $defer->resolve($response); }
+            if ( !$callable ) { return $defer->resolve($result); }
 
-            if ( !is_callable($callable) ) { return $pipefn($callables, $response); }
+            if ( !is_callable($callable) ) { return $pipefn($callables, $result); }
 
-            static::callable2promise($callable, $response)
-                ->then(function($response) use (&$pipefn, &$callables){
-                    $pipefn($callables, $response);
+            static::callable2promise($callable, $result)
+                ->then(function($result) use (&$pipefn, &$callables){
+                    $pipefn($callables, $result);
                 })->catch(function($reason) use ($defer) {
                     $defer->reject($reason);
                 });
@@ -129,6 +145,21 @@ class Promise
         $pipefn( static::args2array($args) );
 
         return $defer->promise;
+    }
+
+    public static function wait($promise)
+    {
+        if ( !Co::exists($CID = Co::getCid()) ) {
+            throw new Exception('API must be called in the coroutine');
+        }
+
+        if ( is_array($promise) || func_num_args() > 1 ) {
+            $promise = static::allsettled(...func_get_args());
+        }
+
+        $promise->finally(function() use ($CID){ Co::resume($CID); });
+
+        Co::yield();
     }
 
     public static function defer()
@@ -142,14 +173,14 @@ class Promise
                 });
             }
 
-            public function reject($response = null)
+            public function reject($result = null)
             {
-                return call_user_func($this->rejectproto, $response);
+                return call_user_func($this->rejectproto, $result);
             }
 
-            public function resolve($response = null)
+            public function resolve($result = null)
             {
-                return call_user_func($this->resolveproto, $response);
+                return call_user_func($this->resolveproto, $result);
             }
         };
     }
@@ -168,14 +199,14 @@ class Promise
 
                 $promisenum++;
 
-                $promise->then(function($response) use (&$promisenum, &$results, $resolve, $key) {
-                    $results[$key]->value = $response;
+                $promise->then(function($result) use (&$promisenum, &$results, $resolve, $key) {
+                    $results[$key]->value = $result;
                     $results[$key]->status = 'fulfilled';
                     if ( !--$promisenum ) { $resolve($results); }
                 });
 
-                $promise->catch(function($response) use (&$promisenum, &$results, $resolve, $key) {
-                    $results[$key]->reason = $response;
+                $promise->catch(function($result) use (&$promisenum, &$results, $resolve, $key) {
+                    $results[$key]->reason = $result;
                     $results[$key]->status = 'rejected';
                     if ( !--$promisenum ) { $resolve($results); }
                 });
@@ -183,26 +214,19 @@ class Promise
         });
     }
 
-    private function reject4static($response = null)
+    private function reject4static($result = null)
     {
-        return static::state4static(0, $response);
+        return static::state4static(0, $result);
     }
 
-    private function resolve4static($response = null)
+    private function resolve4static($result = null)
     {
-        return static::state4static(1, $response);
+        return static::state4static(1, $result);
     }
 
     private function ispromise($val)
     {
         return is_object($val) && $val instanceof self;
-    }
-
-    private function state4static($type, $response = null)
-    {
-        return new self(function($resolve, $reject)use($type, &$response){
-            Co::sleep(0.001); Go($type ? $resolve : $reject, $response);
-        });
     }
 
     private function args2array($args)
@@ -220,8 +244,21 @@ class Promise
         return $alls;
     }
 
-    private function executecallabe(&$callables, $response = null)
+    private function state4static($type, $result = null)
     {
+        return new self(function($resolve, $reject)use($type, &$result){
+            Co::sleep(0.001); Go($type ? $resolve : $reject, $result);
+        });
+    }
+
+    private function executecallabe($result = null)
+    {
+        if ( $this->state === 'pending' ) { return ; }
+
+        if ( $this->state === 'rejected' ) { $callables = &$this->rejects; } else {
+            $callables = &$this->resolves;
+        }
+
         while ( $callable = array_shift($callables) ) {
             if ( static::ispromise($callable) ) {
                 $this->executepromise($callable); break;
@@ -229,7 +266,7 @@ class Promise
 
             if ( !is_callable($callable) ) { continue; }
 
-            if ( static::ispromise($val = $callable($response)) ) {
+            if ( static::ispromise($val = $callable($result ?? $this->result)) ) {
                 $this->executepromise($val); break;
             }
         }
@@ -240,12 +277,12 @@ class Promise
 
     private function executepromise($promise)
     {
-        $promise->then(function($response){
-            call_user_func([$this, $this->state === 'rejected' ? 'reject' : 'resolve'], $response);
+        $promise->then(function($result){
+            call_user_func([$this, $this->state === 'rejected' ? 'reject' : 'resolve'], $result);
         });
     }
 
-    private function callable2promise($callable, $response = null)
+    private function callable2promise($callable, $result = null)
     {
         if ( is_callable($callable) ) {
             $rf = new ReflectionFunction($callable);
@@ -253,15 +290,15 @@ class Promise
             $parameters = $rf->getParameters();
 
             if ( empty($parameters) ) {
-                $promise = $callable($response);
+                $promise = $callable($result);
             }
 
             else if ( $parameters[0]->name === 'resolve' ) {
-                $promise = new self($callable, $response);
+                $promise = new self($callable, $result);
             }
 
             else {
-                $promise = $callable($response);
+                $promise = $callable($result);
             }
         } else if ( is_int($callable) && is_array($timer = Swoole\Timer::info($callable))) {
             $promise = new self(function($resolve) use (&$timer, $callable){
