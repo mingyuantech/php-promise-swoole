@@ -86,21 +86,19 @@ class Promise
 
             $rejected = false;
 
-            $promisenum = 0;
+            $promises = static::args2promises($args);
 
-            foreach (static::args2array($args) as $key => $callable) {
-                $promise = static::callable2promise($callable);
+            $promiselen = sizeof($promises);
 
+            foreach ($promises as $key => $promise) {
                 $results[$key] = null;
 
-                $promisenum++;
-
-                $promise->then(function($result) use (&$promisenum, &$rejected, &$results, $resolve, $key) {
+                $promise->then(function($result) use (&$promiselen, &$rejected, &$results, $resolve, $key) {
                     if ( $rejected ) { return ; }
 
                     $results[$key] = $result;
 
-                    if ( !--$promisenum ) { $resolve($results); }
+                    if ( !--$promiselen ) { $resolve($results); }
                 });
 
                 $promise->catch(function($result) use ($reject, $key) {
@@ -115,9 +113,7 @@ class Promise
         return new self(function($resolve, $reject) use (&$args){
             $RACEd = false;
 
-            foreach (static::args2array($args) as $key => $callable) {
-                $promise = static::callable2promise($callable);
-
+            foreach (static::args2promises($args) as $key => $promise) {
                 $promise->then(function($result) use ($RACEd, $resolve, $key) {
                     !$RACEd && ($RACEd = true && $resolve($result, $key));
                 });
@@ -136,11 +132,9 @@ class Promise
         $pipefn = function(array $callables, $result = null) use ($defer, &$pipefn) {
             $callable = array_shift($callables);
 
-            if ( !$callable ) { return $defer->resolve($result); }
+            if ( empty($callables) ) { return $defer->resolve($result); }
 
-            if ( !is_callable($callable) ) { return $pipefn($callables, $result); }
-
-            static::callable2promise($callable, $result)
+            static::argv2promise($callable, $result)
                 ->then(function($result) use (&$pipefn, &$callables){
                     $pipefn($callables, $result);
                 })->catch(function($reason) use ($defer) {
@@ -148,7 +142,7 @@ class Promise
                 });
         };
 
-        $pipefn( static::args2array($args) );
+        $pipefn( static::args2expand($args) );
 
         return $defer->promise;
     }
@@ -190,9 +184,7 @@ class Promise
 
             $promisenum = 0;
 
-            foreach (static::args2array($args) as $key => $callable) {
-                $promise = static::callable2promise($callable);
-
+            foreach (static::args2promises($args) as $key => $promise) {
                 $results[$key] = new stdClass();
 
                 $promisenum++;
@@ -212,62 +204,103 @@ class Promise
         });
     }
 
-    public static function wait4static($promise)
+    public static function wait4static(...$args)
     {
-        if ( is_array($promise) || func_num_args() > 1 ) {
-            $promise = static::allsettled(...func_get_args());
-        } else if ( !static::ispromise($promise) ) {
-            $promise = static::callable2promise($promise);
-        }
-
         $RETVAL = null;
+
+        $PROMISE = static::args2promise($args);
 
         $SUSPENDCID = null;
 
-        $promise->finally(function($response) use (&$RETVAL, &$SUSPENDCID) {
+        $PROMISE->finally(function($response) use (&$RETVAL, &$SUSPENDCID) {
             $RETVAL = $response; !empty($SUSPENDCID) && Co::resume($SUSPENDCID);
         });
 
-        $promise->state() === 'pending' && ($SUSPENDCID = Co::getcid()) && Co::suspend();
+        $PROMISE->state() === 'pending' && ($SUSPENDCID = Co::getcid()) && Co::suspend();
 
         return $RETVAL;
     }
 
-    private function reject4static($result = null)
+    private static function state4static($type, $result = null)
+    {
+        return new self(function($resolve, $reject)use($type, &$result){
+            call_user_func($type ? $resolve : $reject, $result);
+        });
+    }
+
+    private static function reject4static($result = null)
     {
         return static::state4static(0, $result);
     }
 
-    private function resolve4static($result = null)
+    private static function resolve4static($result = null)
     {
         return static::state4static(1, $result);
     }
 
-    private function ispromise($val)
+    private static function ispromise($val)
     {
         return is_object($val) && $val instanceof self;
     }
 
-    private function args2array($args)
+    private function argv2promise($callable, $result = null)
     {
-        $alls  = [];
+        if ( is_callable($callable) ) {
+            $rf = new ReflectionFunction($callable);
+
+            $parameters = $rf->getParameters();
+
+            if ( empty($parameters) ) {
+                $promise = $callable($result);
+            }
+
+            else if ( $parameters[0]->name === 'resolve' ) {
+                $promise = new self($callable, $result);
+            }
+
+            else {
+                $promise = $callable($result);
+            }
+        } else if ( is_int($callable) && is_array($timer = Swoole\Timer::info($callable))) {
+            $promise = new self(function($resolve) use (&$timer, $callable){
+                Swoole\Timer::after($timer['exec_msec'] + 10, function() use (&$timer, $resolve, $callable){
+                    $resolve(true); $timer['interval'] && Swoole\Timer::clear($callable);
+                });
+            });
+        } else {
+            $promise = &$callable;
+        }
+
+        return static::ispromise($promise) ? $promise : (
+                $promise ? static::resolve($promise) : static::reject($promise)
+            );
+    }
+
+    private static function args2promise($args)
+    {
+        $promises = static::args2promises($args);
+
+        return sizeof($promises) === 1 ? $promises[0] : static::all($promises);
+    }
+
+    private static function args2expand($args)
+    {
+        $_args  = [];
 
         foreach ($args as $argv) {
             if ( is_array($argv) && !is_callable($argv) ) {
-                array_push($alls, ...static::args2array($argv));
+                array_push($_args, ...static::args2expand($argv));
             } else {
-                array_push($alls, $argv);
+                array_push($_args, $argv);
             }
         }
 
-        return $alls;
+        return $_args;
     }
 
-    private function state4static($type, $result = null)
+    private static function args2promises($args)
     {
-        return new self(function($resolve, $reject)use($type, &$result){
-            Co::sleep(0.001); Go($type ? $resolve : $reject, $result);
-        });
+        return array_map([__CLASS__, 'argv2promise'], static::args2expand($args));
     }
 
     private function executecallabe($result = null)
@@ -301,39 +334,6 @@ class Promise
         $promise->then(function($result){
             call_user_func([$this, $this->state === 'rejected' ? 'reject' : 'resolve'], $result);
         });
-    }
-
-    private function callable2promise($callable, $result = null)
-    {
-        if ( is_callable($callable) ) {
-            $rf = new ReflectionFunction($callable);
-
-            $parameters = $rf->getParameters();
-
-            if ( empty($parameters) ) {
-                $promise = $callable($result);
-            }
-
-            else if ( $parameters[0]->name === 'resolve' ) {
-                $promise = new self($callable, $result);
-            }
-
-            else {
-                $promise = $callable($result);
-            }
-        } else if ( is_int($callable) && is_array($timer = Swoole\Timer::info($callable))) {
-            $promise = new self(function($resolve) use (&$timer, $callable){
-                Swoole\Timer::after($timer['exec_msec'] + 10, function() use (&$timer, $resolve, $callable){
-                    $resolve(true); $timer['interval'] && Swoole\Timer::clear($callable);
-                });
-            });
-        } else {
-            $promise = &$callable;
-        }
-
-        return static::ispromise($promise) ? $promise : (
-                $promise ? static::resolve($promise) : static::reject($promise)
-            );
     }
 }
 
