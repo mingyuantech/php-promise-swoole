@@ -3,7 +3,6 @@
 * author: 拓荒者 <eMuBin@126.com>
 **************************************************/
 
-
 class Promise
 {
     private $state = 'pending';
@@ -13,8 +12,15 @@ class Promise
 
     function __construct(callable $callable, ...$args)
     {
-        // Go($callable, [$this, 'resolve'], [$this, 'reject'], ...$args);
+        $this->timestamp = time();
+
         $callable([$this, 'resolve'], [$this, 'reject'], ...$args);
+        // Go($callable, [$this, 'resolve'], [$this, 'reject'], ...$args);
+    }
+
+    public function wait()
+    {
+        return isset($this) ? static::wait4static($this) : static::wait4static(...func_get_args());
     }
 
     public function then(callable $callable)
@@ -147,21 +153,6 @@ class Promise
         return $defer->promise;
     }
 
-    public static function wait($promise)
-    {
-        if ( !Co::exists($CID = Co::getCid()) ) {
-            throw new Exception('API must be called in the coroutine');
-        }
-
-        if ( is_array($promise) || func_num_args() > 1 ) {
-            $promise = static::allsettled(...func_get_args());
-        }
-
-        $promise->finally(function() use ($CID){ Co::resume($CID); });
-
-        Co::yield();
-    }
-
     public static function defer()
     {
         return new class(__CLASS__) {
@@ -171,6 +162,13 @@ class Promise
                     $this->rejectproto = $reject;
                     $this->resolveproto = $resolve;
                 });
+
+                $this->prototype = $prototype;
+            }
+
+            public function wait()
+            {
+                return $this->prototype::wait($this->promise);
             }
 
             public function reject($result = null)
@@ -212,6 +210,27 @@ class Promise
                 });
             }
         });
+    }
+
+    public static function wait4static($promise)
+    {
+        if ( is_array($promise) || func_num_args() > 1 ) {
+            $promise = static::allsettled(...func_get_args());
+        } else if ( !static::ispromise($promise) ) {
+            $promise = static::callable2promise($promise);
+        }
+
+        $RETVAL = null;
+
+        $SUSPENDCID = null;
+
+        $promise->finally(function($response) use (&$RETVAL, &$SUSPENDCID) {
+            $RETVAL = $response; !empty($SUSPENDCID) && Co::resume($SUSPENDCID);
+        });
+
+        $promise->state() === 'pending' && ($SUSPENDCID = Co::getcid()) && Co::suspend();
+
+        return $RETVAL;
     }
 
     private function reject4static($result = null)
@@ -259,6 +278,8 @@ class Promise
             $callables = &$this->resolves;
         }
 
+        if ( !$result ) { $result = $this->result; }
+
         while ( $callable = array_shift($callables) ) {
             if ( static::ispromise($callable) ) {
                 $this->executepromise($callable); break;
@@ -266,7 +287,7 @@ class Promise
 
             if ( !is_callable($callable) ) { continue; }
 
-            if ( static::ispromise($val = $callable($result ?? $this->result)) ) {
+            if ( static::ispromise($val = $callable($result)) ) {
                 $this->executepromise($val); break;
             }
         }
