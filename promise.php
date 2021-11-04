@@ -132,7 +132,7 @@ class Promise
         $pipefn = function(array $callables, $result = null) use ($defer, &$pipefn) {
             $callable = array_shift($callables);
 
-            if ( empty($callables) ) { return $defer->resolve($result); }
+            if ( is_null($callable) && empty($callables) ) { return $defer->resolve($result); }
 
             static::argv2promise($callable, $result)
                 ->then(function($result) use (&$pipefn, &$callables){
