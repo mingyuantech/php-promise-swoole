@@ -3,24 +3,6 @@
 * author: 拓荒者 <eMuBin@126.com>
 **************************************************/
 
-final class defer {
-    function __construct() {
-        $this->promise = new promise();
-    }
-
-    public function wait() {
-        return $this->promise->wait();
-    }
-
-    public function reject($result = null) {
-        return (new ReflectionMethod($this->promise, '_reject'))->getClosure($this->promise)($result);
-    }
-
-    public function resolve($result = null) {
-        return (new ReflectionMethod($this->promise, '_resolve'))->getClosure($this->promise)($result);
-    }
-}
-
 final class promise {
     private $id;
 
@@ -52,7 +34,9 @@ final class promise {
 
     public function wait() {
         if ( $this->state === 'pending' ) {
-            $this->id = Co::getCid();
+            if ( !$this->id ) {
+                $this->id = Co::getCid();
+            }
 
             $this->suspend = true;
 
@@ -78,6 +62,36 @@ final class promise {
         $this->rejects[] = $handler;
 
         $this->resolves[] = $handler;
+
+        return $this;
+    }
+
+    private function _result(string $state, $result = null) {
+        $this->state = $state;
+
+        $this->result = $result;
+
+        return $this->_handler();
+    }
+
+    private function _reject($result = null) {
+        return $this->_result('rejected', $result);
+    }
+
+    private function _resolve($result = null) {
+        return $this->_result('fulfilled', $result);
+    }
+
+    private function _handler() {
+        $handlers = &$this->{$this->state === 'fulfilled' ? 'resolves' : 'rejects'};
+
+        while ($handler = array_shift($handlers)) { $handler($this->result); }
+
+        array_splice($this->rejects, 0);
+
+        array_splice($this->resolves, 0);
+
+        $this->id && $this->suspend && Co::resume($this->id);
 
         return $this;
     }
@@ -147,43 +161,117 @@ final class promise {
         });
     }
 
-    static public function defer() { return new defer(); }
+    static public function pipe(...$args) {
+        if ( empty($args) ) { return ; }
 
-    static public function reject($result = null) { return (new defer())->reject($result); }
+        $result = !is_promise($args[0]) && !is_callable($args[0]) ? array_shift($args) : null;
 
-    static public function resolve($result = null) { return (new defer())->resolve($result); }
+        foreach ($args as $arg) {
+            if ( is_promise($arg) ) { $arg->wait(); }
+
+            else if ( is_callable($arg) ) {
+                is_promise($result = $arg($result)) && ($result = $result->wait());
+            }
+        }
+    }
+
+    static public function reject($result = null) { return (new resolvers())->reject($result); }
+
+    static public function resolve($result = null) { return (new resolvers())->resolve($result); }
+
+    static public function resolvers() { return new resolvers(); }
+
+    static public function restrictor(int $capacity, callable $make) { return new restrictor($capacity, $make); }
 
     static public function allsettled(array $promises) { return self::all($promises, true); }
 
-    static public function withResolvers() { return self::defer(); }
+    static public function withResolvers() { return self::resolvers(); }
+}
 
-    private function _result(string $state, $result = null) {
-        $this->state = $state;
-
-        $this->result = $result;
-
-        return $this->_handler();
+/**
+ * 解忧器
+ * @readme 更自由的调用 promise
+ */
+final class resolvers {
+    function __construct() {
+        $this->promise = new promise();
     }
 
-    private function _reject($result = null) {
-        return $this->_result('rejected', $result);
+    public function wait() {
+        return $this->promise->wait();
     }
 
-    private function _resolve($result = null) {
-        return $this->_result('fulfilled', $result);
+    public function reject($result = null) {
+        return (new ReflectionMethod($this->promise, '_reject'))->getClosure($this->promise)($result);
     }
 
-    private function _handler() {
-        $handlers = &$this->{$this->state === 'fulfilled' ? 'resolves' : 'rejects'};
-
-        while ($handler = array_shift($handlers)) { $handler($this->result); }
-
-        array_splice($this->rejects, 0);
-
-        array_splice($this->resolves, 0);
-
-        $this->id && $this->suspend && Co::resume($this->id);
-
-        return $this;
+    public function resolve($result = null) {
+        return (new ReflectionMethod($this->promise, '_resolve'))->getClosure($this->promise)($result);
     }
+}
+
+/**
+ * 限制器
+ * @readme 限制 promise 的并发数量
+ */
+final class restrictor {
+    private $id;
+
+    private $make;
+
+    private $current = 0;
+
+    private $capacity = 0;
+
+    private $resolvers;
+
+    private $finallyed = false;
+
+    function __construct(int $capacity, callable $make) {
+        $this->id = Co::getCid();
+
+        $this->make = $make;
+
+        $this->capacity = $capacity;
+
+        $this->resolvers = new resolvers();
+
+        $this->dispatch();
+    }
+
+    public function add(): bool {
+        $promise = call_user_func($this->make);
+
+        if ( !($this->finallyed = !is_promise($promise)) ) {
+            $this->current++; $promise->finally([$this, 'defer']);
+        }
+
+        return !$this->finallyed;
+    }
+
+    public function wait() {
+        return $this->resolvers->wait();
+    }
+
+    public function defer() {
+        $this->current--;
+
+        !$this->finallyed ? Co::resume($this->id) : (
+            $this->current < 1 && $this->resolvers->resolve()
+        );
+    }
+
+    public function dispatch() {
+        do {
+            while ($this->current < $this->capacity && $this->add()) {}
+        } while (!$this->finallyed && Co::suspend());
+    }
+}
+
+function is_promise($any = null): bool {
+    return is_object($any) && $any instanceof promise;
+}
+
+function is_resolvers($any = null): bool {
+    return is_object($any) && $any instanceof resolvers;
 }
